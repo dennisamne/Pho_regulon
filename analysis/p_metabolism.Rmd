@@ -1,0 +1,725 @@
+---
+title: "P_metabolism"
+author: "Dennis Amnebrink"
+date: "5/19/2020"
+output:
+  html_document: default
+  pdf_document: default
+code_folding: hide
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r libraries}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(plotly))
+suppressPackageStartupMessages(library(vegan))
+suppressPackageStartupMessages(library(viridis))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(Hmisc))
+suppressPackageStartupMessages(library(lubridate))
+```
+
+```{r loading_files}
+# Table with orfs
+cds_table <- read_tsv("../../dennis_mag_expression/data/cds_counts_filtered.tsv")
+
+#Dataframe with sample names and dates 
+ lmo_id_date <- read_tsv("../../dennis_mag_expression/data/lmo_id_date.tsv.gz") %>%
+  dplyr::select(1, 2) %>% 
+    dplyr::rename(dates=2) %>%
+    dplyr::rename(sample="Sample") %>%
+    mutate(season = ifelse(grepl("201[0-9]-0[3-5]-", dates), "spring",
+                           ifelse(grepl("201[0-9]-0[6-8]-", dates), "summer",
+                                  ifelse(grepl("201[0-9]-09-|201[0-9]-10-|201[0-9]-11-", dates), "autumn", "winter")))) %>%
+    mutate(filter_frac = ifelse(grepl("201[2-5]", dates), "filtered", "unfiltered")) %>%
+    mutate(year = str_extract(dates, "[0-9][0-9][0-9][0-9]"))
+  lmo_id_date$sample <- sub('P12052_1', 'P12052_3', lmo_id_date$sample)
+
+#Taxonomy file
+BACL_taxonomy <- read_tsv("../../dennis_mag_expression/data/BACL_identities.tsv.gz") %>%
+  separate("Taxonomy", c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";[a-z]__", remove = T) %>%
+  mutate(location = ifelse(grepl("*P2236*",MAG ), "redox",
+                           ifelse(grepl("*P1994*", MAG), "transect",
+                                  ifelse(grepl("*SRR*", MAG), "tjärnö", "LMO"))))
+
+# Old code for the eggnog_table (not included in this analysis but kept in case of whats and ifs)
+#p_genes <- read_tsv("../data/p_genes.tsv") %>%
+  #rename(KEGG_ko = "KO") %>%
+ # head(., 34)
+#p_genes$KEGG_ko <- sub("^", "ko:", p_genes$KEGG_ko)
+#p_genes$KEGG_ko[is.na(p_genes$KEGG_ko)] = "NA"
+
+# Dataframe with metadata.
+lmo_date_prep <- read_tsv("../data/lmo_date_prep.tsv") 
+
+# Reading in the hmm-annotated file
+hmms <- read_tsv("../data/final_confirmed_fams/best.ranked.tsv") %>%
+  rename(Geneid = "accno")
+
+hmms_ranked <- read_tsv("../data/final_confirmed_fams/all.ranked.tsv") %>%
+  rename(Geneid = "accno")
+
+# Reading in the annotation table to translate profile to genename
+hmm_anno <- read_tsv("../data/final_confirmed_fams/annotation_table.tsv") %>%
+  filter(protein != "ugpB_FP") # Removing the false positive from the annotation
+
+#Joining the df's
+hmm <- hmms %>%
+  inner_join(hmm_anno, by = "profile")
+
+#Gff-file
+gff <- read_tsv("../data/prodigal/mags_relevant_gff.tsv", col_names = FALSE)
+
+colnames(gff) <- c("seq","source","feature_type","start","end","score","strand","phase","attribute")
+
+#File with gene order as specified by Anabella (for pheatmap only)
+gene_order <- read_tsv("../data/pho_genes_order.tsv", col_names = F, comment = "#") %>%
+  rename(gene_names = 1)
+```
+
+```{r colours}
+GEOM_COL_COLOURS = c(
+  RColorBrewer::brewer.pal(12, name = 'Paired'))
+```
+
+```{r top50_mags_vector}
+# TWO mags are removed from the dataset due to being phylogenetically too similar.
+# These are : P6071_505_bin209, P1994_125_bin49 and are removed from all further analysis.
+
+# The top50 mags
+man_mag_order<- rev(c("P1994_108_bin102", "P6071_508_bin152", "SRR3727512_bin105","P4201_103_bin59", "P4201_116_bin52", "P4201_116_bin63","P1994_127_bin76","P1994_124_bin41","P6071_514_bin160","P6071_511_bin51", "P6071_526_bin59", "P4201_102_bin135", "P6071_517_bin195","SRR3727508_bin38",  "P6071_502_bin182", "P1994_121_bin104","P1994_121_bin230","P4201_101_bin152", "P4201_120_bin54", "P4201_103_bin31", "P2236_112_bin168", "P1994_122_bin236", "SRR3727505_bin154", "P4201_119_bin37", "P6071_532_bin163", "P1994_119_bin73", "P1994_122_bin109", "P1994_125_bin49", "P4201_120_bin71", "P6071_514_bin159","P6071_511_bin252", "P4201_124_bin70", "P4201_106_bin4", "SRR3727521_bin101", "SRR3727512_bin93", "P1994_116_bin178", "P4201_120_bin144", "SRR3727525_bin46", "SRR3727503_bin31", "P4201_123_bin26", "P1994_106_bin43", "P6071_511_bin177", "SRR3727517_bin7", "P4201_112_bin101", "P4201_114_bin172", "P2236_102_bin110", "P1994_107_bin119", "P1994_129_bin89", "P4201_105_bin178","P6071_511_bin140")) 
+
+new_man_mag_order<- rev(c("P1994_108_bin102", "P6071_508_bin152", "SRR3727512_bin105","P4201_103_bin59", "P4201_116_bin52", "P4201_116_bin63","P1994_127_bin76","P1994_124_bin41","P6071_514_bin160","P6071_511_bin51", "P6071_526_bin59", "P4201_102_bin135", "P6071_517_bin195","SRR3727508_bin38",  "P6071_502_bin182", "P1994_121_bin104","P1994_121_bin230","P4201_101_bin152", "P4201_120_bin54", "P4201_103_bin31", "P2236_112_bin168", "P1994_122_bin236", "SRR3727505_bin154", "P4201_119_bin37", "P6071_532_bin163", "P1994_119_bin73", "P1994_122_bin109", "P4201_120_bin71", "P6071_514_bin159","P6071_511_bin252", "P4201_124_bin70", "P4201_106_bin4", "SRR3727521_bin101", "SRR3727512_bin93", "P1994_116_bin178", "P4201_120_bin144", "SRR3727525_bin46", "SRR3727503_bin31", "P4201_123_bin26", "P1994_106_bin43", "P6071_511_bin177", "SRR3727517_bin7", "P4201_112_bin101", "P4201_114_bin172", "P2236_102_bin110", "P1994_107_bin119", "P1994_129_bin89", "P4201_105_bin178","P6071_516_bin75","P6071_511_bin140"))
+
+man_mag_order <- new_man_mag_order
+```
+
+```{r initial_plot_df}
+# making a dataframe with mean counts per date for each orf, and annotating it with hmm-hits.
+plot_df <- cds_table %>% 
+  inner_join(lmo_id_date, by = "sample") %>%
+  dplyr::filter(filter_frac == "unfiltered") %>%
+  group_by(dates, Geneid, MAG) %>% 
+  summarise(counts = as.integer(mean(counts))) %>%
+  ungroup() %>%
+  inner_join(BACL_taxonomy, by = "MAG") %>%
+  inner_join(hmm, by = "Geneid") 
+
+# Creating a criteria for removing dates where MAGs have less than 3000 counts.
+cds_table_filtered <- cds_table %>%  inner_join(lmo_id_date, by = "sample") %>% dplyr::filter(filter_frac == "unfiltered") %>% group_by(dates, MAG, Geneid) %>% summarise(counts = mean(counts)) %>% ungroup() %>% group_by(MAG, dates) %>% summarise(counts = sum(counts)) %>% ungroup() %>% dplyr::filter(counts >= 3000)
+
+# Remake the dataframe calculated on the cds table and then joining in the hmmtable, also removing dates with low counts.
+tpm_calc <- cds_table %>% 
+  inner_join(lmo_id_date, by = "sample") %>%
+  dplyr::filter(filter_frac == "unfiltered") %>%
+  group_by(dates, Geneid, MAG) %>% 
+  summarise(counts = as.integer(mean(counts))) %>%
+  ungroup() %>%
+  inner_join(cds_table %>% distinct(Geneid, Length)) %>%
+  group_by(MAG, dates) %>%
+  mutate(t = counts/Length) %>%
+  mutate(tpm = t/sum(t)*1e6) %>%
+  ungroup() %>%
+  dplyr::select(-t) %>%
+  semi_join(cds_table_filtered, by = c("dates", "MAG")) # Removing the low count dates.
+
+# Creating the within MAG-tpm expression for all hmm-genes
+plot_df <- tpm_calc %>%
+  inner_join(hmm, by = "Geneid") %>%
+  group_by(protein, dates, MAG) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>% # 5036 rows
+  inner_join(hmm_anno %>% distinct(protein, pathway), by = "protein")
+
+```
+
+# Looking at contigs
+```{r gff-file}
+contig_exploration <- hmm %>%
+  inner_join(cds_table, by = "Geneid") %>%
+  inner_join(BACL_taxonomy, by = "MAG") %>%
+  distinct(MAG, Geneid, protein, contig)
+
+#making gff-file sortable by mags and genes
+attrs <- gff %>%
+  separate(attribute, c("key","Gene"), sep = 3) %>%
+  separate(Gene, c("Geneid", "rest"), sep = 14) %>%
+  select(seq, Geneid, start, end, strand) %>%
+  separate(seq, c("MAG", "contig"), sep = "_k")
+
+#Writing dataframe for synteni
+attrs %>%
+  inner_join(contig_exploration, by = c("Geneid","MAG", "contig")) %>%
+  write_tsv(.,"../data/gene_positions.tsv")
+```
+
+## Remake cds table for all Genes (also not expressed) 
+```{r}
+#The unfiltered file is big to read in!
+cds_table1 <- read_tsv("../data/cds_unfiltered.tsv")
+
+# Make sure that the prefiltered samples get removed, filter away columns, should make it easy.
+
+#Projectnames for 2016 and 2017 - P8559 and P12052
+length(grep("^P8559|^P12052", colnames(cds_table1) ,value=TRUE, ignore.case =T)) # 64 columns, good!
+
+# Here is the dataframe with all genes and whether or not they are expressed for the top50 MAGs for the years 2016/17.
+all_genes <- cds_table1 %>%
+  select(1:7, grep("^P8559|^P12052", colnames(cds_table1) ,value=TRUE, ignore.case =T)) %>%
+  mutate(sum = rowSums(.[8:ncol(.)])) %>% # Summarising expression per gene for relevant dates
+  mutate(expressed = ifelse(sum > 0, "yes","no")) %>%
+  select(1:7, ncol(.)) %>%
+  filter(MAG %in% man_mag_order) %>%
+  inner_join(hmm, by = "Geneid") %>%
+  inner_join(BACL_taxonomy, by = "MAG") %>%
+  select(-rank, -min_score, -score, -hmm_profile, -pathway, -evalue, -profile) 
+
+write_tsv(all_genes, "../results/pho_genes_overview.tsv")
+
+## Now the same can be done for the genome copies here, great
+ genome_copies <-  all_genes %>%
+    group_by(protein, MAG) %>%
+    tally() %>%
+    ungroup() %>%
+    spread(protein, n, fill = 0) %>%
+    inner_join(BACL_taxonomy, by = "MAG")
+ 
+ write_tsv(genome_copies, "../results/gene_copies_per_mag.tsv")
+ 
+ ## expressed gene copies per mag
+ 
+ expressed_copies <-  all_genes %>%
+    filter(expressed == "yes") %>%
+    group_by(protein, MAG) %>%
+    tally() %>%
+    ungroup() %>%
+    spread(protein, n, fill = 0) %>%
+    inner_join(BACL_taxonomy, by = "MAG")
+ 
+ write_tsv(expressed_copies, "../results/gene_copies_expressed_per_mag.tsv")
+ 
+# The difference from the previous snippet is that this one instead includes all years, and not limited to 16/17, which one to use depends on the question asked.
+ 
+ # summarising_expressed_genes_and_copies_per_mag
+cds_table %>%
+  filter(MAG %in% man_mag_order) %>%
+  distinct(MAG, Geneid) %>%
+  inner_join(hmms, by = "Geneid") %>% # 489 rows
+  inner_join(hmm_anno, by = "profile") %>% #489 rows, good
+  distinct(MAG, protein, Geneid) %>% # 489, good
+  group_by(MAG, protein) %>%
+  tally() %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  spread(protein, n, fill = 0) %>% 
+  inner_join(BACL_taxonomy, by = "MAG") %>%
+  write_tsv(.,"../results/gene_copies_expressed_per_mag.tsv")
+```
+
+## Plotting of genes and pathways per MAG
+```{r Identifying_MAGs_with_highest_expression}
+# Looking at the top 50 mags and their expression for each gene
+top50_mags <- cds_table %>%
+  inner_join(lmo_id_date, by ="sample") %>%
+  filter(filter_frac == "unfiltered") %>%
+  group_by(dates) %>%
+  mutate(t = counts/Length) %>%
+  mutate(tpm = t/sum(t)*1e6) %>%
+  ungroup() %>%
+  select(-t) %>%
+  group_by(MAG) %>%
+  summarise(sum_tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(MAG != c("P1994_125_bin49","P6071_505_bin209")) %>%
+  arrange(desc(sum_tpm)) %>%
+  mutate( 
+    medsort_MAG = factor(MAG) %>% forcats::fct_reorder(sum_tpm, .desc = FALSE)) %>%
+      slice(1:50)
+
+# Vector for plotting
+mag_vec <- top50_mags$MAG # this is synonymous with man_mag_order, as it should be
+# Plot genes for each MAG
+for (n in mag_vec) {
+  
+ plot_df %>% 
+  filter(MAG == n) %>%
+    ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales = "free") +
+   ggtitle(paste0(n)) +
+     scale_x_date(date_breaks = "1 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-01-01"),as.Date("2017-12-30"))) +
+    theme(axis.text.x = element_text(hjust = 1, angle = 60))
+   ggsave(paste0("../results/mag_p_graphs/",n,".pdf"))
+}
+
+# Doing a facet wrap on the pathway instead
+
+for (n in mag_vec) {
+  
+ p <- plot_df %>% 
+  filter(MAG == n) %>%
+    ggplot(mapping = aes(x = dates, y = tpm, group = protein)) +
+  geom_line() +
+   ggtitle(paste0(n)) +
+     scale_x_date(date_breaks = "1 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-01-01"),as.Date("2017-12-30"))) +
+    theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+   facet_wrap(~ pathway, scales = "free_y")
+    ggsave(paste0("../results/mag_p_pathway_graphs/",n,".pdf"))
+ print(p)
+}
+
+for (n in mag_vec){
+# Try a pheatmap object instead, then do a matrix of relevant genes first
+df <- plot_df %>% 
+  filter(MAG == n) %>%
+  select(dates, protein, tpm) %>%
+  spread(dates, tpm, fill = 0) %>%
+  column_to_rownames("protein") %>%
+  as.matrix()
+
+if (ncol(df) < 4) { next } 
+if (nrow(df) < 4) { next } 
+
+pheatmap(df, cluster_rows = T, cluster_cols = F, clustering_distance_rows = "correlation", scale = "row", main = paste0(n), filename = paste0("../results/pheatmap/",n,".pdf"))
+
+}
+```
+
+```{r pathway_plotting_MAGs}
+plot_df %>%
+  filter(MAG %in% mag_vec) %>%
+  group_by(MAG, pathway, dates) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes( x = dates, y = tpm, group = pathway, colour = pathway)) +
+  geom_line() +
+  facet_wrap(~ MAG, scales = "free_y") +
+  scale_color_manual('Pathway', values = GEOM_COL_COLOURS) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) 
+ # ggsave("../results/pathways_per_mag.pdf")
+
+# Plotting with facet wrap on pathway
+for (n in mag_vec){
+p <- plot_df %>%
+  filter(MAG == n ) %>%
+  ggplot(mapping = aes( x = dates, y = tpm, group = protein)) +
+  geom_line() +
+    facet_wrap(~ pathway, scales = "free_y") +
+  scale_color_manual('Pathway', values = GEOM_COL_COLOURS) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+  ggtitle(paste0(n))
+
+print(p)
+}
+
+```
+
+## Plotting MAGs of interest
+```{r cyanos_plotted}
+
+#This segment is made to look at specific MAGs (listed below), decided upon after examination of the pathway plotting segment.
+
+#List of MAGs to plot specifically
+#P1994_122_bin236
+#P1994_122_bin109
+#P6071_532_bin163
+#P4201_124_bin70
+#SRR3727505_bin154
+#P1994_119_bin73
+#P1994_125_bin160 - not present unfortunately
+
+mags_of_interest <- c("P1994_122_bin236","P1994_122_bin109","P6071_532_bin163","P4201_124_bin70","SRR3727505_bin154","P1994_119_bin73")
+
+plot_df %>% 
+  filter(MAG == "P1994_122_bin236") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = c(0.6,0), legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("P1994_122_bin236") +
+  ggsave("../results/mags_of_interest/cyanos/P1994_122_bin236.pdf", width = 24, height = 16, units = "cm")
+
+#Making the pheatmap object
+p <- plot_df %>% 
+  filter(MAG == "P1994_122_bin236") %>%
+  dplyr::select(dates, protein, tpm) %>%
+  spread(dates, tpm, fill = 0) %>%
+  column_to_rownames("protein")
+  
+pheatmap(p, scale = "row", cluster_rows = T, cluster_cols = F, main = "P1994_122_bin236", filename = "../results/mags_of_interest/cyanos/P1994_122_bin236.heat.pdf")
+
+#Below each plot for a specific MAG is made and saved per code snippet.
+  
+plot_df %>% 
+  filter(MAG == "P1994_122_bin109") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("P1994_122_bin109") +
+  ggsave("../results/mags_of_interest/cyanos/P1994_122_bin109.pdf")
+  
+plot_df %>% 
+  filter(MAG == "P6071_532_bin163") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("P6071_532_bin163") +
+  ggsave("../results/mags_of_interest/cyanos/P6071_532_bin163.pdf")
+  
+plot_df %>% 
+  filter(MAG == "P4201_124_bin70") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("P4201_124_bin70") 
+  ggsave("../results/mags_of_interest/cyanos/P4201_124_bin70.pdf")
+  
+plot_df %>% 
+  filter(MAG == "SRR3727505_bin154") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("SRR3727505_bin154") 
+  ggsave("../results/mags_of_interest/cyanos/SRR3727505_bin154.pdf")
+  
+plot_df %>% 
+  filter(MAG == "P1994_119_bin73") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, group = protein, colour = pathway, fill = pathway)) +
+  geom_line() +
+  facet_wrap(~ protein, scales  = "free_y") +
+  geom_point() +
+  scale_x_date(date_breaks = "2 month", date_labels = "%Y %m",
+    limit=c(as.Date("2016-03-01"),as.Date("2017-12-30"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 0.5) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",  legend.text = element_text(size = 8)) +
+  xlab("") +
+  ggtitle("P1994_119_bin73") 
+  ggsave("../results/mags_of_interest/cyanos/P1994_119_bin73.pdf")
+```
+
+```{r pheatmap_MAG_gene_contribution}
+# Doing pheatmap using within MAG normalization (tpm)
+ mat <- cds_table %>%
+  inner_join(lmo_id_date, by ="sample") %>%
+  filter(filter_frac == "unfiltered") %>%
+  group_by(dates, MAG) %>%
+  mutate(t = counts/Length) %>%
+  mutate(tpm = t/sum(t)*1e6) %>%
+  ungroup() %>%
+  select(-t) %>% 
+  filter(MAG %in% man_mag_order) %>%
+  inner_join(hmm, by = "Geneid") %>% 
+  group_by(MAG, protein) %>%
+  summarise(mean_tpm = mean(tpm)) %>%
+  ungroup() %>%
+  spread(protein, mean_tpm, fill = NA) %>%
+  inner_join(BACL_taxonomy %>% select(MAG, BACL), by = "MAG") %>%
+  select(-MAG) %>%
+  column_to_rownames("BACL") %>%
+  as.matrix()
+
+#Creating annotation for pheatmap
+  ann_col <-BACL_taxonomy %>% 
+    filter(MAG %in% man_mag_order) %>%
+    mutate(taxonomy = ifelse(grepl("Proteobacteria", Phylum),paste0(Class),paste0(Phylum))) %>%
+    replace(is.na(.), "unclassified") %>%
+    select(BACL,taxonomy) %>%
+     mutate(taxonomy = factor(taxonomy, levels = c("Cyanobacteria","Alphaproteobacteria","Gammaproteobacteria","Actinobacteria","Bacteroidetes","Chloroflexi","Crenarchaeota","Nitrospinae","Planctomycetes","Thermoplasmataeota","Verrucomicrobia","NA"))) %>%
+    arrange(taxonomy) %>%
+    column_to_rownames("BACL") 
+   
+# Creating colourscheme for pheatmap
+  Var1 = brewer.pal(12, "Paired")
+  names(Var1) = unique(ann_col$taxonomy)
+  annCol = list(taxonomy = Var1)
+
+# For cyanobacteria change the order a bit (per Anabellas request)
+# BACL185, BACL63, BACL75, BACL327, BACL347, BACL349
+  
+BACL_order <- c(
+"BACL185","BACL63","BACL75","BACL327","BACL347","BACL349","BACL5","BACL10","BACL39","BACL144","BACL149",
+"BACL190","BACL262","BACL325","BACL1","BACL3","BACL14","BACL16","BACL26","BACL35","BACL44","BACL62",
+"BACL64","BACL67","BACL78","BACL105","BACL154","BACL178","BACL214","BACL234","BACL330","BACL2","BACL8",
+"BACL11","BACL21","BACL22","BACL38","BACL81","BACL135","BACL252","BACL138","BACL13","BACL187","BACL104",
+"BACL322","BACL76","BACL9","BACL153","BACL241","BACL94")
+
+#Pheatmap with YLOrRd colorscale
+ pheatmap(mat[BACL_order,as.vector(gene_order$gene_names)], scale = "row",fontsize_row = 8, main = "Average transcriptomic contribution within a MAG", cluster_cols = F, cluster_rows = F, annotation_row = ann_col, annotation_names_row = F, color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "YlOrRd")))(100), annotation_colors = annCol , filename = "../results/average_gene_tpm_within_MAG_normalized1.pdf")
+ 
+ #Pheatmap with YLOrRd colorscale unnormalized
+ pheatmap(mat[BACL_order,as.vector(gene_order$gene_names)],fontsize_row = 8, main = "Average transcriptomic contribution within a MAG", cluster_cols = F, cluster_rows = F, annotation_row = ann_col, annotation_names_row = F, color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "YlOrRd")))(100), annotation_colors = annCol , filename = "../results/average_gene_tpm_within_MAG.pdf")
+ 
+ 
+ #Pheatmap with default colourscale
+  pheatmap(mat[BACL_order,as.vector(gene_order$gene_names)], scale = "row",fontsize_row = 8, main = "Average transcriptomic contribution within a MAG", cluster_cols = F, cluster_rows = F, annotation_row = ann_col, annotation_names_row = F, annotation_colors = annCol, filename = "../results/average_gene_tpm_within_MAG_normalized2.pdf")
+  
+  pheatmap(mat[BACL_order,as.vector(gene_order$gene_names)],fontsize_row = 8, main = "Average transcriptomic contribution within a MAG", cluster_cols = F, cluster_rows = F, annotation_row = ann_col, annotation_names_row = F, annotation_colors = annCol, filename = "../results/average_gene_tpm_within_MAG2.pdf")
+  
+  
+```
+
+# Exploratory analysis not used in the project so far
+
+## MAG P-conc correlation
+```{r Pconc_mag_tot_expr_spearman_corr}
+#correlating total mag expression with P-concentrations
+top50_tot_expr <- cds_table %>% 
+  inner_join(lmo_id_date, by = "sample") %>%
+  dplyr::filter(filter_frac == "unfiltered") %>%
+  group_by(dates, Geneid, MAG) %>% 
+  summarise(counts = as.integer(mean(counts))) %>%
+  ungroup() %>%
+  inner_join(cds_table %>% distinct(Geneid, Length)) %>%
+  group_by(dates) %>%
+  mutate(t = counts/Length) %>%
+  mutate(tpm = t/sum(t)*1e6) %>%
+  ungroup() %>%
+  dplyr::select(-t) %>%
+  filter(MAG %in% new_man_mag_order) %>% # Filtering out the top50 MAGs
+  semi_join(cds_table_filtered, by = c("MAG", "dates"))
+
+corr_mat <- top50_tot_expr %>%
+  group_by(dates, MAG)  %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  spread(MAG, tpm, fill = 0) %>%
+  inner_join(p_n_conc %>% select(Phosphate_Average, dates), by = "dates") %>%
+  column_to_rownames("dates") %>%
+  as.matrix()
+  
+corr_matrix <- rcorr(as.matrix(corr_mat), type = "spearman")
+ 
+MAG_p_corr <- as.data.frame(corr_matrix$r) %>% 
+  rownames_to_column("p_conc") %>%
+  filter(p_conc == "Phosphate_Average") 
+
+#making sure the data structure is the same before joining dataframes
+
+setdiff(
+  colnames(as.data.frame(corr_matrix$r) %>% 
+  rownames_to_column("p_conc") %>%
+  filter(p_conc == "Phosphate_Average")),
+  colnames(as.data.frame(corr_matrix$P) %>% 
+  rownames_to_column("p_conc") %>%
+  filter(p_conc == "Phosphate_Average"))
+) # The difference is 0 hence they are in the same order, good
+
+# Joining in both p- and r values (not used for now)
+as.data.frame(corr_matrix$r) %>% 
+  rownames_to_column("p_conc") %>%
+  filter(p_conc == "Phosphate_Average") %>%
+  rbind(as.data.frame(corr_matrix$P) %>% 
+  rownames_to_column("p_conc") %>%
+  filter(p_conc == "Phosphate_Average")) %>%
+  select(-Phosphate_Average) %>% #removing the self correlation with phosphate
+  
+MAG_p_corr %>%
+  gather(MAG, rho, c(2:ncol(.))) %>%
+  arrange(desc(rho)) %>%
+  write_tsv("../results/MAG_tot_expr_P_corr.tsv")
+
+MAG_p_corr <- read_tsv("../results/MAG_tot_expr_P_corr.tsv")
+```
+
+```{r genome_copies_correlation_grouping}
+genome_copies <- read_tsv("../results/genome_copies_pho_regulon.tsv")
+
+# Plotting the number of gene copies for the positively vs negatively correlated MAGs. This partitioning would be interesting also on a larger taxonomic level in community dataset.
+genome_copies %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  gather(gene, copies, c(2:31)) %>%
+  group_by(gene, correlation) %>%
+  summarise(mean_copies = mean(copies)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = gene, y = mean_copies, fill = correlation, colour = correlation)) +
+  geom_col(position = "dodge") +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+  ggtitle("average genome copies 0.5 correlated mags") +
+  ggsave("../results/Correlation_analysis/correlated_mags_0.5_average_genome_copies.png")
+
+p_obj <-genome_copies %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  arrange(correlation) %>%
+  select(-p_conc, -rho, -correlation) %>%
+  column_to_rownames("MAG") 
+
+corr_vec <- genome_copies %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  select(MAG,correlation) %>%
+  arrange(correlation) %>%
+  column_to_rownames("MAG")
+
+pheatmap(p_obj, cluster_rows = T, cluster_cols = F, annotation_row = corr_vec, clustering_distance_rows = "correlation", main = "Genome copies P-genes")
+
+# How does it look at the expression level though? This is interesting, several phn-genes only expressed in the negatively correlated P-MAGs.
+
+plot_df %>%
+  #group_by(protein, MAG) %>%
+  #summarise(mean_tpm = mean(tpm), sd_tpm = sd(tpm)) %>%
+  #ungroup() %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>% 
+  group_by(correlation, protein) %>%
+  summarise(mean_tpm = mean(tpm), sd_tpm = sd(tpm)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = protein, y = mean_tpm, fill = correlation, colour = correlation)) +
+  geom_col(position = "dodge") +
+  geom_errorbar(aes(x = protein, y = mean_tpm, ymin = mean_tpm - sd_tpm, ymax = mean_tpm +sd_tpm), position = "dodge", colour = "black")
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+  ggtitle("Average gene expression based on correlation (0.5 treshold)") +
+  xlab("protein") +
+  ylab("mean_tpm")
+  
+  # Doing boxplots instead, sphX excluded due to disturbingly high numbers
+plot_df %>%
+  group_by(protein, MAG) %>%
+  summarise(mean_tpm = mean(tpm), sd_tpm = sd(tpm)) %>%
+  ungroup() %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>% 
+  filter(protein != "sphX") %>%
+  ggplot(mapping = aes(x = protein, y = mean_tpm, fill = correlation)) +
+  geom_boxplot() +
+  xlab("protein") +
+  ylab("mean_tpm") +
+  theme(axis.text.x = element_text(hjust = 1 , angle = 60)) +
+  ggtitle("mean tpm + sd MAG expression 0.5 rho-treshold") +
+  ggsave("../results/tpm_dist_0.5rho_mags.pdf") +
+  ggsave("../results/Correlation_analysis/boxplot_expression.png")
+```
+
+```{r spearman_correlation_example}
+# Creating the column with phosphate average
+p_n_conc <- lmo_date_prep %>%
+  filter(filter_frac == "unfiltered") %>%
+  select(dates, Phosphate_Average, Nitrate_Average) %>% 
+  filter(!is.na(Phosphate_Average))
+
+# Making a spearman correlation between the different pathways and nutrients for a MAG
+corr_mat <- plot_df %>%
+  group_by(pathway, dates, MAG) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(MAG == "P1994_122_bin236") %>% 
+  dplyr::select(pathway, dates, tpm) %>%
+  spread(pathway, tpm, fill = 0) %>%
+  inner_join(p_n_conc, by = "dates") %>%
+  column_to_rownames("dates") 
+
+corr_matrix <- rcorr(as.matrix(corr_mat), type = "spearman")
+ 
+corr_matrix$r %>% view()
+
+pheatmap(as.data.frame(corr_matrix$r) %>% dplyr::select(1:6), cluster_cols = T, cluster_rows = T, main = "bin236 pathway correlation", filename = "../results/mags_of_interest/heatmap.example.pdf")
+
+  corr_matrix$r %>% view()
+```
+
+```{r plot_high_corr_with_p_conc}
+MAG_p_corr %>%
+  filter(rho <= -0.7 | rho >= 0.7) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative"))
+
+# Plotting the most tightly coupled MAG/P relationships
+top50_tot_expr %>% 
+  group_by(dates, MAG)  %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.7 | rho >= 0.7) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  group_by(MAG) %>%
+  mutate(zscore = (tpm - mean(tpm))/ sd(tpm)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = dates, y = zscore, group = MAG, fill = correlation, colour = correlation)) +
+  geom_line()
+```
+
+```{r, lineplots_correlated_mags_broad_categories}
+#Positively correlated MAGs
+plot_df %>%
+  group_by(MAG, dates, pathway) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  filter(correlation == "positive") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, fill = pathway, colour = pathway)) +
+  geom_line() +
+  facet_wrap(~ MAG, scales = "free_y") +
+  theme(legend.position = "bottom") +
+  ggtitle("positively_correlated_MAGs") +
+  scale_color_manual('Pathway', values = GEOM_COL_COLOURS) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+  ggsave("../results/Correlation_analysis/positively_correlated_0.5_MAGs.png")
+  
+#Negatively correlated MAGs
+plot_df %>%
+  group_by(MAG, dates, pathway) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  inner_join(MAG_p_corr %>%
+  filter(rho <= -0.5 | rho >= 0.5) %>%
+  mutate(correlation = ifelse(rho > 0, "positive","negative")), by = "MAG") %>%
+  filter(correlation == "negative") %>%
+  ggplot(mapping = aes(x = dates, y = tpm, fill = pathway, colour = pathway)) +
+  geom_line() +
+  facet_wrap(~ MAG, scales = "free_y") +
+  theme(legend.position = "bottom") +
+  ggtitle("negatively_correlated_MAGs") +
+  scale_color_manual('Pathway', values = GEOM_COL_COLOURS) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
+  ggsave("../results/Correlation_analysis/negatively_correlated_0.5_MAGs.png")
+```
+
+```{r phyto_biomass_data}
+phyto <- read_tsv("../data/lmo_phyto.tsv") 
+```
