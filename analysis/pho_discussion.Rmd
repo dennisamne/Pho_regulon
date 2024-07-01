@@ -1,0 +1,96 @@
+---
+title: "Pho_discussion"
+author: "Dennis Amnebrink"
+date: "3/29/2021"
+output: 
+  html_document:
+    toc: yes
+    toc_float: true
+---
+
+```{r}
+# Add heatmaps for cyano with correlation in expression for the pathways, use average for cyano vs heterohrophic.
+# Do the p-correlation analysis, but with autotrophs vs heterotrophs.
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE, include=FALSE}
+library(kfigr)
+library(tidyverse)
+library(kableExtra)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+BACL_taxonomy <- read_tsv("../../dennis_mag_expression/data/BACL_identities.tsv.gz") %>%
+  separate("Taxonomy", c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";[a-z]__", remove = T) %>%
+  mutate(location = ifelse(grepl("*P2236*",MAG ), "redox",
+                           ifelse(grepl("*P1994*", MAG), "transect",
+                                  ifelse(grepl("*SRR*", MAG), "tjärnö", "LMO"))))
+```
+
+# Gene copies per MAG genome and transcriptome
+
+```{r message=FALSE, warning=FALSE}
+metaT_copies <- read_tsv("../results/gene_copies_expressed_per_mag.tsv")
+
+kable(metaT_copies, caption = "Copies expressed in the metatranscriptome per MAG") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(width = "700px", height = "400px") 
+```
+
+```{r message=FALSE, warning=FALSE}
+genome_copies <- read_tsv("../results/genome_copies_pho_regulon.tsv")
+
+kable(genome_copies) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(width = "700px", height = "400px")
+```
+
+
+#Correlation analysis with P-concentration
+```{r message=FALSE, warning=FALSE}
+MAG_p_corr <- read_tsv("../results/Correlation_analysis/MAG_tot_expr_P_corr.tsv")
+kable(MAG_p_corr) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(width = "700px", height = "400px") 
+```
+
+```{r fig.cap="line plot of the MAG-expression dynamics for mags with a correlation higher than 0.7 with P-conc", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/correlation_lineplot_0.7.png")
+```
+
+```{r fig.cap="line plot of the MAG-expression dynamics for mags with a correlation higher than 0.5 with P-conc", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/correlation_lineplot_0.5.png")
+```
+
+```{r fig.cap="Table", message=FALSE, warning=FALSE}
+kable(MAG_p_corr %>%
+ dplyr::filter(rho <= -0.5 | rho >= 0.5) %>%
+   inner_join(BACL_taxonomy, by = "MAG")) %>%
+kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(width = "700px", height = "400px")
+```
+
+
+## Correlation analysis genome adaptation?
+```{r fig.cap="Average copy number between postively and negatively correlated MAGs", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/correlated_mags_0.5_average_genome_copies.png")
+```
+
+
+```{r fig.cap="Average tpp-expression value for each gene per mag per date", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/boxplot_expression.png")
+```
+
+```{r fig.cap="line plots of negatively correlated mags as sum of within mag epxression per date and coloured by pathway", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/negatively_correlated_0.5_MAGs.png")
+```
+
+```{r fig.cap="line plots of positively correlated mags as sum of within mag epxression per date and coloured by pathway", message=FALSE, warning=FALSE}
+knitr::include_graphics("../results/Correlation_analysis/positively_correlated_0.5_MAGs.png")
+```
+
